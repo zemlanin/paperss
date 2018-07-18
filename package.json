@@ -20,5 +20,16 @@
   "devDependencies": {
     "eslint": "5.1.0",
     "prettier": "1.13.7"
+  },
+  "eslintConfig": {
+    "extends": "eslint:recommended",
+    "env": {
+      "browser": false,
+      "es6": true,
+      "node": true
+    },
+    "rules": {
+      "no-console": 0
+    }
   }
 }
