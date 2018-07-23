@@ -5,7 +5,7 @@ const escapeHTML = require("escape-html");
 let COOKIE = process.env.COOKIE;
 const ARTICLES_CACHE = {};
 
-function httpRequest(params, postData) {
+async function httpRequest(params, postData) {
   return new Promise(function(resolve, reject) {
     var req = https.request(params, function(res) {
       if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -48,12 +48,12 @@ function saveToCache(article) {
   return article;
 }
 
-function getArticle(cookie, { id, pubDate, url }) {
+async function getArticle(cookie, { id, pubDate, url }) {
   if (ARTICLES_CACHE[id]) {
-    return Promise.resolve(ARTICLES_CACHE[id]);
+    return ARTICLES_CACHE[id];
   }
 
-  return httpRequest({
+  const resp = await httpRequest({
     hostname: "www.instapaper.com",
     port: "443",
     path: `/read/${id}`,
@@ -62,19 +62,17 @@ function getArticle(cookie, { id, pubDate, url }) {
       Cookie: cookie,
       "User-Agent": "node " + process.version
     }
-  })
-    .then(resp => {
-      const $ = cheerio.load(resp.body);
+  });
 
-      return {
-        id,
-        url,
-        pubDate,
-        title: $("title").text(),
-        html: $("#story").html()
-      };
-    })
-    .then(saveToCache);
+  const $ = cheerio.load(resp.body);
+
+  return saveToCache({
+    id,
+    url,
+    pubDate,
+    title: $("title").text(),
+    html: $("#story").html()
+  });
 }
 
 function getArticleFromListCheerio(i, el) {
@@ -98,8 +96,8 @@ function extendWithPubDate(acc, { guid, pubDate }) {
   return acc;
 }
 
-function getList(cookie) {
-  return httpRequest({
+async function getList(cookie) {
+  const resp = await httpRequest({
     hostname: "www.instapaper.com",
     port: "443",
     path: "/u",
@@ -108,35 +106,35 @@ function getList(cookie) {
       Cookie: cookie,
       "User-Agent": "node " + process.version
     }
-  }).then(resp => {
-    const $ = cheerio.load(resp.body);
-    const rssFeedPath = $('link[type="application/rss+xml"]').attr("href");
-
-    return httpRequest({
-      hostname: "www.instapaper.com",
-      port: "443",
-      path: rssFeedPath,
-      method: "GET"
-    }).then(rssFeed => {
-      const articles = $("article")
-        .map(getArticleFromListCheerio)
-        .get();
-
-      const dates = cheerio("item", rssFeed.body)
-        .map(getArticleFromRSSCheerio)
-        .get()
-        .reduce(extendWithPubDate, {});
-
-      const articlesWithDates = articles
-        .filter(article => dates[article.url])
-        .map(article => ((article.pubDate = dates[article.url]), article))
-        .slice(0, 5);
-
-      return Promise.all(
-        articlesWithDates.map(article => getArticle(cookie, article))
-      );
-    });
   });
+
+  const $ = cheerio.load(resp.body);
+  const rssFeedPath = $('link[type="application/rss+xml"]').attr("href");
+
+  const rssFeed = await httpRequest({
+    hostname: "www.instapaper.com",
+    port: "443",
+    path: rssFeedPath,
+    method: "GET"
+  });
+
+  const articles = $("article")
+    .map(getArticleFromListCheerio)
+    .get();
+
+  const dates = cheerio("item", rssFeed.body)
+    .map(getArticleFromRSSCheerio)
+    .get()
+    .reduce(extendWithPubDate, {});
+
+  const articlesWithDates = articles
+    .filter(article => dates[article.url])
+    .map(article => ((article.pubDate = dates[article.url]), article))
+    .slice(0, 5);
+
+  return Promise.all(
+    articlesWithDates.map(article => getArticle(cookie, article))
+  );
 }
 
 function generateRSSItem(item) {
@@ -159,22 +157,29 @@ function getCookiePart(setCookieHeader) {
   }
 }
 
-function getInstapaperCookie(username, password) {
-  return httpRequest(
-    {
-      hostname: "www.instapaper.com",
-      port: "443",
-      path: "/user/login",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"
-      }
-    },
-    `username=${encodeURIComponent(username)}&password=${encodeURIComponent(
-      password
-    )}`
-  ).catch(resp => {
-    if (resp.statusCode === 302 && resp.headers && resp.headers["set-cookie"]) {
+async function getInstapaperCookie(username, password) {
+  try {
+    await httpRequest(
+      {
+        hostname: "www.instapaper.com",
+        port: "443",
+        path: "/user/login",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"
+        }
+      },
+      `username=${encodeURIComponent(username)}&password=${encodeURIComponent(
+        password
+      )}`
+    );
+  } catch (resp) {
+    if (
+      resp &&
+      resp.statusCode === 302 &&
+      resp.headers &&
+      resp.headers["set-cookie"]
+    ) {
       COOKIE = resp.headers["set-cookie"]
         .map(getCookiePart)
         .filter(Boolean)
@@ -184,34 +189,31 @@ function getInstapaperCookie(username, password) {
     }
 
     throw resp;
-  });
+  }
 }
 
-function generate() {
-  const cookiePromise = COOKIE
-    ? Promise.resolve(COOKIE)
-    : getInstapaperCookie(process.env.USERNAME, process.env.PASSWORD);
+async function generate() {
+  const cookie =
+    COOKIE ||
+    (await getInstapaperCookie(process.env.USERNAME, process.env.PASSWORD));
+  const list = await getList(cookie);
 
-  return cookiePromise.then(getList).then(list =>
-    `
-      <?xml version="1.0" encoding="UTF-8"?>
-      <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
-        <channel>
-          <title>Instapaper: Unread</title>
-          <link>https://www.instapaper.com/u</link>
-          <description></description>
+  return `
+    <?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+      <channel>
+        <title>Instapaper: Unread</title>
+        <link>https://www.instapaper.com/u</link>
+        <description></description>
 
-          ${list.map(generateRSSItem).join("\n")}
-        </channel>
-      </rss>
-    `.trim()
-  );
+        ${list.map(generateRSSItem).join("\n")}
+      </channel>
+    </rss>
+  `.trim();
 }
 
-function gcf(req, res) {
-  return generate().then(result => {
-    res.status(200).send(result);
-  });
+async function gcf(req, res) {
+  return res.status(200).send(await generate());
 }
 
 if (require.main === module) {
