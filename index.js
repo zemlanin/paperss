@@ -53,16 +53,45 @@ async function getArticle(cookie, { id, pubDate, url }) {
     return ARTICLES_CACHE[id];
   }
 
-  const resp = await httpRequest({
-    hostname: "www.instapaper.com",
-    port: "443",
-    path: `/read/${id}`,
-    method: "GET",
-    headers: {
-      Cookie: cookie,
-      "User-Agent": "node " + process.version
+  let resp;
+
+  try {
+    resp = await httpRequest({
+      hostname: "www.instapaper.com",
+      port: "443",
+      path: `/read/${id}`,
+      method: "GET",
+      headers: {
+        Cookie: cookie,
+        "User-Agent": "node " + process.version
+      }
+    });
+  } catch (e) {
+    if (
+      e &&
+      e.statusCode === 302 &&
+      e.headers["location"] &&
+      ~e.headers["location"].indexOf(`?parse_error=${id}`)
+    ) {
+      return saveToCache({
+        id,
+        url,
+        pubDate,
+        title: url,
+        html: "parse_error"
+      });
     }
-  });
+
+    console.error(e);
+
+    return {
+      id,
+      url,
+      pubDate,
+      title: url,
+      html: JSON.stringify(e)
+    };
+  }
 
   const $ = cheerio.load(resp.body);
 
