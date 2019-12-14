@@ -242,7 +242,10 @@ async function generate() {
 }
 
 async function gcf(req, res) {
-  return res.status(200).send(await generate());
+  return res
+    .status(200)
+    .set("Content-Type", "application/rss+xml")
+    .send(await generate());
 }
 
 if (require.main === module) {
